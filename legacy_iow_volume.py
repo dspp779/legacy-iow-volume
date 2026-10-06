@@ -155,6 +155,22 @@ def line_after(lines: list[str], label: str) -> str:
     return ""
 
 
+def detail_parse_hint(html: str) -> str:
+    span = re.search(
+        r'id="ContentPlaceHolder1_lblRT"[^>]*>\s*([^<]*?)\s*</span>',
+        html,
+        re.IGNORECASE,
+    )
+    clock = span.group(1).strip() if span else ""
+    lines = html_lines(html)
+    updated = line_after(lines, "上次資料更新時間：") or line_after(lines, "上次資料更新時間")
+    index = html.find("累計運轉時間")
+    snippet = ""
+    if index >= 0:
+        snippet = re.sub(r"\s+", " ", html[index:index + 240])
+    return f"clock={clock!r} updated={updated!r} snippet={snippet!r}"
+
+
 def parse_detail_page(html: str) -> tuple[str, int, str] | None:
     lines = html_lines(html)
     span = re.search(
@@ -468,9 +484,14 @@ def run(
             if row is None:
                 logger.warning("skip pump %s: not in the realtime list", pump_no)
                 continue
-            parsed = parse_detail_page(fetch_detail_page(web_client, base_url, row))
+            html = fetch_detail_page(web_client, base_url, row)
+            parsed = parse_detail_page(html)
             if parsed is None:
-                logger.warning("skip pump %s: detail page has no cumulative run time", pump_no)
+                logger.warning(
+                    "skip pump %s: detail page has no cumulative run time; %s",
+                    pump_no,
+                    detail_parse_hint(html),
+                )
                 continue
             received_at, seconds, shown = parsed
         else:
