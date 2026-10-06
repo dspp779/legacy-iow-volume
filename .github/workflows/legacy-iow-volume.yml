@@ -4,8 +4,8 @@ name: legacy IoW volume
 
 on:
   schedule:
-    # Avoid minute 0. GitHub delays scheduled workflows at the top of the hour.
-    - cron: "7,17,27,37,47,57 * * * *"
+    # Every 5 minutes UTC. This is the shortest interval GitHub allows.
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:
