@@ -35,7 +35,7 @@ _LOG_STAMP = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
 _HIDDEN_INPUT = re.compile(r'<input\b[^>]*type="hidden"[^>]*>', re.IGNORECASE)
 _INPUT_ATTR = re.compile(r'([\w:]+)="([^"]*)"')
 _SITE_TIME = re.compile(
-    r"(\d{4})/(\d{1,2})/(\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?"
+    r"(\d{4})/(\d{1,2})/(\d{1,2})(?:\s+(上午|下午))?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?"
 )
 _DEFAULT_SITE = "https://gis.cpem.com.tw"
 _DEFAULT_TOKEN_URL = "https://iapi.wra.gov.tw/v3/oauth2/token"
@@ -95,11 +95,16 @@ def normalize_site_time(raw: str) -> str | None:
     match = _SITE_TIME.search(raw)
     if match is None:
         return None
-    year, month, day, hour, minute, second = match.groups()
+    year, month, day, meridiem, hour, minute, second = match.groups()
+    hour_value = int(hour)
+    if meridiem == "下午" and hour_value < 12:
+        hour_value += 12
+    elif meridiem == "上午" and hour_value == 12:
+        hour_value = 0
     second = second or "00"
     return (
         f"{int(year):04d}-{int(month):02d}-{int(day):02d} "
-        f"{int(hour):02d}:{int(minute):02d}:{int(second):02d}"
+        f"{hour_value:02d}:{int(minute):02d}:{int(second):02d}"
     )
 
 

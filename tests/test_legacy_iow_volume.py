@@ -164,6 +164,17 @@ def test_login_form_posts_session_fields() -> None:
     ) is True
 
 
+def test_site_time_accepts_meridiem() -> None:
+    assert mod.normalize_site_time("2026/10/6 上午 09:15:00") == "2026-10-06 09:15:00"
+    assert mod.normalize_site_time("2026/10/6 下午 01:15:00") == "2026-10-06 13:15:00"
+    parsed = mod.parse_detail_page(
+        '<span id="ContentPlaceHolder1_lblRT">9:51:23</span>'
+        "<div>上次資料更新時間：</div><div>2026/10/6 上午 09:15:00</div>"
+    )
+    assert parsed == ("2026-10-06 09:15:00", 35483, "9:51:23")
+    assert mod.volume_m3(35483, Decimal("0.3")) == 10645
+
+
 def test_detail_page_cumulative_hours() -> None:
     parsed = mod.parse_detail_page(_DETAIL_PAGE)
     assert parsed == ("2026-09-07 10:49:00", 35172, "9:46:12")
