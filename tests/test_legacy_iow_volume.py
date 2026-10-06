@@ -171,6 +171,32 @@ def test_detail_page_cumulative_hours() -> None:
     assert mod.parse_detail_page("<html></html>") is None
 
 
+def test_web_config_does_not_require_phone(tmp_path: Path) -> None:
+    path = tmp_path / "pumps.json"
+    path.write_text(
+        json.dumps(
+            {
+                "source": "web",
+                "pumps": [{"pump_no": "150026", "datastream_id": ""}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = mod.load_config(path)
+    assert "phone" not in config["pumps"][0]
+    assert config["pumps"][0]["rated_cms"] == Decimal("0.3")
+    path.write_text(
+        json.dumps({"source": "sql", "pumps": [{"pump_no": "150026"}]}),
+        encoding="utf-8",
+    )
+    try:
+        mod.load_config(path)
+    except ValueError as error:
+        assert "invalid phone" in str(error)
+    else:
+        raise AssertionError("sql config without phone should fail")
+
+
 def test_web_dry_run_uses_session_and_skips_upload(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("LEGACY_UNIT", "單位")
     monkeypatch.setenv("LEGACY_ACCOUNT", "account")
@@ -203,6 +229,7 @@ def test_dry_run_does_not_write_state(tmp_path: Path) -> None:
     config["source"] = "log"
     config["log_dir"] = str(tmp_path)
     config["pumps"] = [config["pumps"][0]]
+    config["pumps"][0]["phone"] = "0900000001"
     config["pumps"][0]["datastream_id"] = "11111111-1111-1111-1111-111111111111"
     (tmp_path / "Log_2026_09_07.txt").write_text(
         "[2026-09-07 10:49:00]: " + _SAMPLE + "\n",

@@ -17,7 +17,7 @@
 
 ## 泵設定
 
-以 `pumps.example.json` 為底，`source` 必須是 `web`。網頁模式用 `pump_no` 對即時清單，`phone` 只要是 10 碼、`09` 開頭即可。每台的 `datastream_id` 填 IoW「累積總抽水量」的 UUID，空白的那台會略過。`rated_cms` 維持 `0.3`。
+以 `pumps.example.json` 為底，`source` 必須是 `web`。網頁模式用 `pump_no` 對即時清單。每台的 `datastream_id` 填 IoW「累積總抽水量」的 UUID，空白的那台會略過。`rated_cms` 省略時是 `0.3`。
 
 把完成的 JSON 整份貼進 `LEGACY_IOW_PUMPS_JSON`。
 

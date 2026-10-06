@@ -264,14 +264,20 @@ def load_config(path: Path) -> dict:
     pumps = data.get("pumps")
     if not isinstance(pumps, list) or not pumps:
         raise ValueError("config pumps must be a non-empty list")
+    source = str(data.get("source", "sql"))
     for pump in pumps:
-        phone = str(pump.get("phone", "")).strip()
-        if _PHONE.fullmatch(phone) is None:
-            raise ValueError(f"invalid phone for pump {pump.get('pump_no')}")
-        pump["phone"] = phone
         pump["pump_no"] = str(pump.get("pump_no", "")).strip()
+        if not pump["pump_no"]:
+            raise ValueError("pump_no is required")
         pump["datastream_id"] = str(pump.get("datastream_id", "")).strip()
         pump["rated_cms"] = Decimal(str(pump.get("rated_cms", "0.3")))
+        phone = str(pump.get("phone", "")).strip()
+        if source == "web":
+            pump.pop("phone", None)
+            continue
+        if _PHONE.fullmatch(phone) is None:
+            raise ValueError(f"invalid phone for pump {pump['pump_no']}")
+        pump["phone"] = phone
     return data
 
 
@@ -488,9 +494,8 @@ def run(
             continue
         cubic_meters = volume_m3(seconds, pump["rated_cms"])
         logger.info(
-            "pump %s phone %s run %s volume %s m3 at %s",
+            "pump %s run %s volume %s m3 at %s",
             pump_no,
-            pump["phone"],
             shown,
             cubic_meters,
             received_at,
