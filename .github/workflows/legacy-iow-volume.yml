@@ -1,0 +1,74 @@
+# Schedule runs only from the default branch. Do not add pull_request.
+
+name: legacy IoW volume
+
+on:
+  schedule:
+    # Avoid minute 0. GitHub delays scheduled workflows at the top of the hour.
+    - cron: "7,17,27,37,47,57 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Query only, do not upload
+        type: boolean
+        default: true
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: legacy-iow-volume
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore upload progress
+        uses: actions/cache/restore@v4
+        with:
+          path: legacy-iow-state/state.json
+          key: legacy-iow-volume-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            legacy-iow-volume-
+
+      - name: Write pump config
+        env:
+          LEGACY_IOW_PUMPS_JSON: ${{ secrets.LEGACY_IOW_PUMPS_JSON }}
+        run: |
+          mkdir -p legacy-iow-state
+          if [ -z "$LEGACY_IOW_PUMPS_JSON" ]; then
+            echo "Set repo secret LEGACY_IOW_PUMPS_JSON" >&2
+            exit 1
+          fi
+          printf '%s\n' "$LEGACY_IOW_PUMPS_JSON" > legacy-iow-state/pumps.json
+          python3 -c 'import json,sys; data=json.load(open("legacy-iow-state/pumps.json", encoding="utf-8")); sys.exit(0 if data.get("source")=="web" else "pump config source must be web")'
+
+      - name: Upload hour-meter volume
+        env:
+          LEGACY_UNIT: ${{ secrets.LEGACY_UNIT }}
+          LEGACY_ACCOUNT: ${{ secrets.LEGACY_ACCOUNT }}
+          LEGACY_PASSWORD: ${{ secrets.LEGACY_PASSWORD }}
+          IOW_CLIENT_ID: ${{ secrets.IOW_CLIENT_ID }}
+          IOW_CLIENT_SECRET: ${{ secrets.IOW_CLIENT_SECRET }}
+        run: |
+          args=(
+            legacy_iow_volume.py
+            --config legacy-iow-state/pumps.json
+            --state legacy-iow-state/state.json
+          )
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          python3 "${args[@]}"
+
+      - name: Save upload progress
+        if: success() && hashFiles('legacy-iow-state/state.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: legacy-iow-state/state.json
+          key: legacy-iow-volume-${{ github.run_id }}-${{ github.run_attempt }}
