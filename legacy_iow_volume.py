@@ -493,14 +493,14 @@ def run(
             logger.info("skip pump %s: reading unchanged", pump_no)
             continue
         cubic_meters = volume_m3(seconds, pump["rated_cms"])
+        item = observation(datastream_id, received_at, cubic_meters)
         logger.info(
-            "pump %s run %s volume %s m3 at %s",
+            "pump_no=%s datastream_id=%s payload=%s",
             pump_no,
-            shown,
-            cubic_meters,
-            received_at,
+            datastream_id,
+            json.dumps(item, ensure_ascii=False),
         )
-        pending.append(observation(datastream_id, received_at, cubic_meters))
+        pending.append(item)
         uploaded[pump_no] = {
             "seconds": seconds,
             "received_at": received_at,

@@ -197,7 +197,7 @@ def test_web_config_does_not_require_phone(tmp_path: Path) -> None:
         raise AssertionError("sql config without phone should fail")
 
 
-def test_web_dry_run_uses_session_and_skips_upload(tmp_path: Path, monkeypatch) -> None:
+def test_web_dry_run_uses_session_and_skips_upload(tmp_path: Path, monkeypatch, caplog) -> None:
     monkeypatch.setenv("LEGACY_UNIT", "單位")
     monkeypatch.setenv("LEGACY_ACCOUNT", "account")
     monkeypatch.setenv("LEGACY_PASSWORD", "secret")
@@ -211,9 +211,15 @@ def test_web_dry_run_uses_session_and_skips_upload(tmp_path: Path, monkeypatch) 
     config["pumps"][0]["datastream_id"] = "11111111-1111-1111-1111-111111111111"
     site = _FakeSite()
     state_path = tmp_path / "state.json"
-    code = mod.run(config, state_path, dry_run=True, opener=site)
+    with caplog.at_level("INFO"):
+        code = mod.run(config, state_path, dry_run=True, opener=site)
     assert code == 0
     assert not state_path.exists()
+    assert "pump_no=150026" in caplog.text
+    assert "datastream_id=11111111-1111-1111-1111-111111111111" in caplog.text
+    assert '"Id": "11111111-1111-1111-1111-111111111111"' in caplog.text
+    assert '"Value": 10552' in caplog.text
+    assert "dry-run:" in caplog.text
     assert site.posts
     assert "tbPasswd=secret" in site.posts[0]
     assert "__VIEWSTATE=abc%2Bdef%3D" in site.posts[0]
