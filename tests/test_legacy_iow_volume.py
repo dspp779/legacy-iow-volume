@@ -6,6 +6,8 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 
 def _load():
     path = (
@@ -261,3 +263,77 @@ def test_dry_run_does_not_write_state(tmp_path: Path) -> None:
     )
     assert code == 0
     assert not state_path.exists()
+
+
+def _production_fixture(tmp_path, monkeypatch):
+    config = {"source": "log", "log_dir": str(tmp_path), "pumps": [{
+        "pump_no": "150026", "phone": "0900000001",
+        "datastream_id": "11111111-1111-1111-1111-111111111111", "rated_cms": "0.3",
+    }]}
+    (tmp_path / "Log_2026_09_07.txt").write_text(
+        "[2026-09-07 10:49:00]: " + _SAMPLE + "\n", encoding="cp950")
+    monkeypatch.setenv("IOW_CLIENT_ID", "fake-id")
+    monkeypatch.setenv("IOW_CLIENT_SECRET", "fake-secret")
+    monkeypatch.setattr(mod, "fetch_oauth_token", lambda *args: "fake-token")
+    return config, tmp_path / "state.json", datetime(2026, 9, 7, 18, 0)
+
+
+def test_serial_duplicate_ticks_and_dry_run_never_resend_or_advance_state(tmp_path, monkeypatch):
+    config, path, now = _production_fixture(tmp_path, monkeypatch)
+    sent = []
+    monkeypatch.setattr(mod, "post_observations", lambda url, token, items: sent.append(items))
+    assert mod.run(config, path, False, now) == 0
+    before = path.read_bytes()
+    assert len(sent) == 1
+    # A repeat represents the next serialized dispatch or overlapping backup.
+    assert mod.run(config, path, False, now) == 0
+    assert len(sent) == 1
+    assert path.read_bytes() == before
+    log = tmp_path / "Log_2026_09_07.txt"
+    log.write_text("[2026-09-07 10:50:00]: " + _SAMPLE.replace("9h46m12s", "9h47m12s"), encoding="cp950")
+    assert mod.run(config, path, True, now) == 0
+    assert len(sent) == 1
+    assert path.read_bytes() == before
+    assert mod.run(config, path, False, now) == 0
+    assert len(sent) == 2
+    assert path.read_bytes() != before
+
+
+def test_failed_upload_leaves_previous_progress_available_for_retry(tmp_path, monkeypatch):
+    config, path, now = _production_fixture(tmp_path, monkeypatch)
+    previous = {"150026": {"seconds": 60, "received_at": "2026-09-07 10:00:00", "volume_m3": 18}}
+    mod.save_state(path, previous)
+    before = path.read_bytes()
+
+    def fail(*args):
+        raise RuntimeError("simulated write failure")
+
+    monkeypatch.setattr(mod, "post_observations", fail)
+    with pytest.raises(RuntimeError):
+        mod.run(config, path, False, now)
+    assert path.read_bytes() == before
+    sent = []
+    monkeypatch.setattr(mod, "post_observations", lambda *args: sent.append(args))
+    assert mod.run(config, path, False, now) == 0
+    assert len(sent) == 1
+    assert mod.load_state(path)["150026"]["seconds"] == 35172
+
+
+def test_accepted_upload_followed_by_state_loss_can_repeat(tmp_path, monkeypatch):
+    # Documents the remaining exactly-once gap; every call here is a fake.
+    config, path, now = _production_fixture(tmp_path, monkeypatch)
+    sent = []
+    monkeypatch.setattr(mod, "post_observations", lambda *args: sent.append(args))
+    save_state = mod.save_state
+
+    def fail_save(*args):
+        raise OSError("simulated disk failure after remote acceptance")
+
+    monkeypatch.setattr(mod, "save_state", fail_save)
+    with pytest.raises(OSError):
+        mod.run(config, path, False, now)
+    assert len(sent) == 1
+    assert not path.exists()
+    monkeypatch.setattr(mod, "save_state", save_state)
+    assert mod.run(config, path, False, now) == 0
+    assert len(sent) == 2
