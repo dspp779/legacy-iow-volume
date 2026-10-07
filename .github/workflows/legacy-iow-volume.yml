@@ -1,10 +1,11 @@
-# Schedule runs only from the default branch. Do not add pull_request.
+# External cron -> workflow_dispatch is primary. No production pull_request trigger.
 
 name: legacy IoW volume
+run-name: "legacy IoW volume | ${{ github.event_name == 'schedule' && 'production' || inputs.dry_run == false && 'production' || 'dry-run' }} | ${{ inputs.tick_id || github.event_name }}"
 
 on:
   schedule:
-    # Every 5 minutes UTC. This is the shortest interval GitHub allows.
+    # Best-effort backup only, gated by LEGACY_IOW_SCHEDULE_BACKUP_ENABLED.
     - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
@@ -12,9 +13,20 @@ on:
         description: Query only, do not upload
         type: boolean
         default: true
+      confirm_production:
+        description: Explicitly authorize an upload (also requires repo production switch)
+        type: boolean
+        default: false
+      allow_empty_state:
+        description: One-off recovery only, after checking for previously accepted observations
+        type: boolean
+        default: false
+      tick_id:
+        description: External cron correlation id (not an idempotency key)
+        type: string
+        default: manual
 
 permissions:
-  actions: write
   contents: read
 
 concurrency:
@@ -23,10 +35,23 @@ concurrency:
 
 jobs:
   upload:
+    if: >-
+      github.repository == 'dspp779/legacy-iow-volume' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name != 'schedule' || vars.LEGACY_IOW_SCHEDULE_BACKUP_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Resolve upload mode
+        id: mode
+        env:
+          LEGACY_IOW_PRODUCTION_ENABLED: ${{ vars.LEGACY_IOW_PRODUCTION_ENABLED }}
+          LEGACY_IOW_SCHEDULE_BACKUP_ENABLED: ${{ vars.LEGACY_IOW_SCHEDULE_BACKUP_ENABLED }}
+        run: python3 scripts/workflow_guard.py mode >> "$GITHUB_OUTPUT"
 
       - name: Restore upload progress
         uses: actions/cache/restore@v5
@@ -35,6 +60,12 @@ jobs:
           key: legacy-iow-volume-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             legacy-iow-volume-
+
+      - name: Require valid production state
+        env:
+          UPLOAD_MODE: ${{ steps.mode.outputs.mode }}
+          ALLOW_EMPTY_STATE: ${{ steps.mode.outputs.allow_empty_state }}
+        run: python3 scripts/workflow_guard.py state legacy-iow-state/state.json
 
       - name: Write pump config
         env:
@@ -49,26 +80,50 @@ jobs:
           python3 -c 'import json,sys; data=json.load(open("legacy-iow-state/pumps.json", encoding="utf-8")); sys.exit(0 if data.get("source")=="web" else "pump config source must be web")'
 
       - name: Upload hour-meter volume
+        id: upload
         env:
           LEGACY_UNIT: ${{ secrets.LEGACY_UNIT }}
           LEGACY_ACCOUNT: ${{ secrets.LEGACY_ACCOUNT }}
           LEGACY_PASSWORD: ${{ secrets.LEGACY_PASSWORD }}
-          IOW_CLIENT_ID: ${{ secrets.IOW_CLIENT_ID }}
-          IOW_CLIENT_SECRET: ${{ secrets.IOW_CLIENT_SECRET }}
+          IOW_CLIENT_ID: ${{ steps.mode.outputs.mode == 'production' && secrets.IOW_CLIENT_ID || '' }}
+          IOW_CLIENT_SECRET: ${{ steps.mode.outputs.mode == 'production' && secrets.IOW_CLIENT_SECRET || '' }}
+          UPLOAD_MODE: ${{ steps.mode.outputs.mode }}
         run: |
+          before=$(python3 scripts/workflow_guard.py fingerprint legacy-iow-state/state.json)
           args=(
             legacy_iow_volume.py
             --config legacy-iow-state/pumps.json
             --state legacy-iow-state/state.json
           )
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
+          if [ "$UPLOAD_MODE" = "dry-run" ]; then
             args+=(--dry-run)
           fi
           python3 "${args[@]}"
+          after=$(python3 scripts/workflow_guard.py fingerprint legacy-iow-state/state.json)
+          if [ "$before" != "$after" ]; then
+            echo 'state_changed=true' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Save upload progress
-        if: success() && hashFiles('legacy-iow-state/state.json') != ''
+        if: steps.mode.outputs.mode == 'production' && steps.upload.outputs.state_changed == 'true'
         uses: actions/cache/save@v5
         with:
           path: legacy-iow-state/state.json
           key: legacy-iow-volume-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # cache/save can report a warning without failing. Verify the exact new key.
+      - name: Verify saved progress exists
+        id: saved
+        if: steps.mode.outputs.mode == 'production' && steps.upload.outputs.state_changed == 'true'
+        uses: actions/cache/restore@v5
+        with:
+          path: legacy-iow-state/state.json
+          key: legacy-iow-volume-${{ github.run_id }}-${{ github.run_attempt }}
+          lookup-only: true
+          fail-on-cache-miss: true
+
+      - name: Require exact saved progress key
+        if: steps.mode.outputs.mode == 'production' && steps.upload.outputs.state_changed == 'true'
+        env:
+          CACHE_HIT: ${{ steps.saved.outputs.cache-hit }}
+        run: test "$CACHE_HIT" = true

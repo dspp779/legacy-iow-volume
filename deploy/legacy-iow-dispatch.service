@@ -1,0 +1,17 @@
+[Unit]
+Description=Dispatch legacy IoW volume workflow
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=legacy-iow-cron
+WorkingDirectory=/opt/legacy-iow-volume
+EnvironmentFile=/etc/legacy-iow-dispatch.env
+# Safe initial installation: dry-run. See docs/external-cron.md for activation.
+ExecStart=/usr/bin/python3 /opt/legacy-iow-volume/scripts/dispatch_workflow.py
+TimeoutStartSec=45s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

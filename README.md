@@ -23,6 +23,10 @@
 
 ## 執行
 
-排程每 5 分鐘一次，只在這個檔位於預設分支時才會跑。GitHub 可能延遲或略過整班。Actions 頁面可以手動執行；`dry_run` 預設勾選，只登入並讀資料，不上傳。排程沒有這個勾選，會真的上傳。
+主路徑使用 **cron-job.org 每 5 分鐘直接 POST GitHub `workflow_dispatch`**。可照 [cron-job.org 設定指南](docs/cron-job-org.md) 填 URL、headers 和 request body；上傳程式與既有 secrets 繼續由 Actions 執行。Actions 排隊仍可能延遲，因此這是約每 5 分鐘派發的方案。其他外部 cron、concurrency/state 限制與故障比較見 [外部派發設計](docs/external-cron.md)。
 
-同一筆時數和更新時間不會重送。進度存在 Actions cache。
+Actions 手動執行預設 `dry_run=true`，只登入並讀資料，不上傳、不修改 state，也不提供 IoW OAuth secrets。Production 需 `dry_run=false`、`confirm_production=true`、repo variable `LEGACY_IOW_PRODUCTION_ENABLED=true`，且只能在這個 repo 的 `main` 執行。
+
+原有 `*/5 * * * *` GitHub schedule 保留為備援，預設關閉；另設 `LEGACY_IOW_SCHEDULE_BACKUP_ENABLED=true` 才會執行，也受 production 開關與 state 檢查保護。兩條路徑共用固定 concurrency group，不取消進行中的上傳。
+
+成功上傳後才更新去重 state；同一筆時數和更新時間通常會略過。進度沿用 Actions cache，缺失或空白時 production 預設停止。Cache 不是持久交易紀錄，仍有上傳成功但 state 保存失敗／cache 回退時重送的風險，詳見操作手冊。
