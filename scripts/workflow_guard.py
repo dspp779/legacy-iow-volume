@@ -26,22 +26,17 @@ def resolve_mode(event: dict, environment: dict) -> tuple[str, bool]:
     if environment.get("GITHUB_REF") != PRODUCTION_REF:
         raise ValueError("only main may use this uploader")
     event_name = environment.get("GITHUB_EVENT_NAME")
-    if event_name == "workflow_dispatch":
-        inputs = event.get("inputs") or {}
-        dry_run = boolean(inputs.get("dry_run", True), "dry_run")
-        allow_empty = boolean(inputs.get("allow_empty_state", False), "allow_empty_state")
-        if dry_run:
-            if allow_empty:
-                raise ValueError("allow_empty_state is only for production recovery")
-            return "dry-run", False
-        if not boolean(inputs.get("confirm_production", False), "confirm_production"):
-            raise ValueError("production requires confirm_production=true")
-    elif event_name == "schedule":
-        if environment.get("LEGACY_IOW_SCHEDULE_BACKUP_ENABLED") != "true":
-            raise ValueError("schedule backup is disabled")
-        allow_empty = False
-    else:
-        raise ValueError("only workflow_dispatch or the schedule backup is supported")
+    if event_name != "workflow_dispatch":
+        raise ValueError("only workflow_dispatch is supported")
+    inputs = event.get("inputs") or {}
+    dry_run = boolean(inputs.get("dry_run", True), "dry_run")
+    allow_empty = boolean(inputs.get("allow_empty_state", False), "allow_empty_state")
+    if dry_run:
+        if allow_empty:
+            raise ValueError("allow_empty_state is only for production recovery")
+        return "dry-run", False
+    if not boolean(inputs.get("confirm_production", False), "confirm_production"):
+        raise ValueError("production requires confirm_production=true")
     if environment.get("LEGACY_IOW_PRODUCTION_ENABLED") != "true":
         raise ValueError("production requires LEGACY_IOW_PRODUCTION_ENABLED=true")
     return "production", allow_empty

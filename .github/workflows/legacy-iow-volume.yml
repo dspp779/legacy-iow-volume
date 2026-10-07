@@ -1,12 +1,9 @@
-# External cron -> workflow_dispatch is primary. No production pull_request trigger.
+# External cron -> workflow_dispatch only; keep GitHub schedule out of this workflow.
 
 name: legacy IoW volume
-run-name: "legacy IoW volume | ${{ github.event_name == 'schedule' && 'production' || inputs.dry_run == false && 'production' || 'dry-run' }} | ${{ inputs.tick_id || github.event_name }}"
+run-name: "legacy IoW volume | ${{ inputs.dry_run == false && 'production' || 'dry-run' }} | ${{ inputs.tick_id || github.event_name }}"
 
 on:
-  schedule:
-    # Best-effort backup only, gated by LEGACY_IOW_SCHEDULE_BACKUP_ENABLED.
-    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -38,7 +35,7 @@ jobs:
     if: >-
       github.repository == 'dspp779/legacy-iow-volume' &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name != 'schedule' || vars.LEGACY_IOW_SCHEDULE_BACKUP_ENABLED == 'true')
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -50,7 +47,6 @@ jobs:
         id: mode
         env:
           LEGACY_IOW_PRODUCTION_ENABLED: ${{ vars.LEGACY_IOW_PRODUCTION_ENABLED }}
-          LEGACY_IOW_SCHEDULE_BACKUP_ENABLED: ${{ vars.LEGACY_IOW_SCHEDULE_BACKUP_ENABLED }}
         run: python3 scripts/workflow_guard.py mode >> "$GITHUB_OUTPUT"
 
       - name: Restore upload progress

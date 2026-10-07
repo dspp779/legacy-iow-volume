@@ -80,8 +80,7 @@ def check_health(data: dict, now: datetime, max_age_minutes: int) -> dict:
     production = [
         run for run in data.get("workflow_runs", [])
         if run.get("head_branch") == "main"
-        and run.get("event") in {"workflow_dispatch", "schedule"}
-        and not (run.get("event") == "schedule" and run.get("conclusion") == "skipped")
+        and run.get("event") == "workflow_dispatch"
         and run.get("display_title", "").startswith("legacy IoW volume | production | ")
     ]
     recent_successes = []

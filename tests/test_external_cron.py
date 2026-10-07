@@ -50,19 +50,13 @@ def test_ambiguous_or_unapproved_production_inputs_fail_closed(inputs, settings)
         guard.resolve_mode({"inputs": inputs}, environment(**settings))
 
 
-def test_confirmed_dispatch_and_opt_in_backup_share_production_guard():
+def test_confirmed_dispatch_requires_production_switch_and_allows_explicit_recovery():
     event = {"inputs": {"dry_run": "false", "confirm_production": "true"}}
+    with pytest.raises(ValueError, match="PRODUCTION_ENABLED"):
+        guard.resolve_mode(event, environment())
     assert guard.resolve_mode(event, environment(LEGACY_IOW_PRODUCTION_ENABLED="true")) == ("production", False)
     event["inputs"]["allow_empty_state"] = "true"
     assert guard.resolve_mode(event, environment(LEGACY_IOW_PRODUCTION_ENABLED="true")) == ("production", True)
-    backup = environment(GITHUB_EVENT_NAME="schedule", LEGACY_IOW_PRODUCTION_ENABLED="true")
-    with pytest.raises(ValueError, match="backup is disabled"):
-        guard.resolve_mode({}, backup)
-    backup["LEGACY_IOW_SCHEDULE_BACKUP_ENABLED"] = "true"
-    assert guard.resolve_mode(event, backup) == ("production", False)
-    backup.pop("LEGACY_IOW_PRODUCTION_ENABLED")
-    with pytest.raises(ValueError, match="PRODUCTION_ENABLED"):
-        guard.resolve_mode({}, backup)
 
 
 @pytest.mark.parametrize("changes", [
@@ -71,6 +65,8 @@ def test_confirmed_dispatch_and_opt_in_backup_share_production_guard():
     {"GITHUB_REPOSITORY": "someone/legacy-iow-volume"},
     {"GITHUB_EVENT_NAME": "repository_dispatch"},
     {"GITHUB_EVENT_NAME": "pull_request"},
+    {"GITHUB_EVENT_NAME": "schedule", "LEGACY_IOW_SCHEDULE_BACKUP_ENABLED": "true",
+     "LEGACY_IOW_PRODUCTION_ENABLED": "true"},
 ])
 def test_other_branches_repositories_and_events_cannot_enter_uploader(changes):
     with pytest.raises(ValueError):
@@ -202,9 +198,10 @@ def run_record(**changes):
     }
 
 
-def test_health_excludes_dry_run_and_disabled_backup_and_reads_without_post(monkeypatch, capsys):
+def test_health_excludes_dry_run_and_old_schedule_runs_and_reads_without_post(monkeypatch, capsys):
     records = [run_record(), run_record(display_title="legacy IoW volume | dry-run | manual"),
-               run_record(event="schedule", conclusion="skipped", created_at="2026-10-07T02:03:00Z")]
+               run_record(event="schedule", conclusion="skipped", created_at="2026-10-07T02:03:00Z"),
+               run_record(event="schedule", created_at="2026-10-07T02:02:00Z")]
     assert cron.check_health({"workflow_runs": records}, NOW, 15)["id"] == 123
     with pytest.raises(RuntimeError):
         cron.check_health({"workflow_runs": records[1:]}, NOW, 15)
@@ -238,13 +235,13 @@ def test_health_detects_stale_or_failed_production(records):
 
 def test_workflow_keeps_guards_credentials_and_state_in_the_correct_order():
     workflow = yaml.load((ROOT / ".github/workflows/legacy-iow-volume.yml").read_text(), Loader=yaml.BaseLoader)
-    assert set(workflow["on"]) == {"schedule", "workflow_dispatch"}
+    assert set(workflow["on"]) == {"workflow_dispatch"}
     assert workflow["on"]["workflow_dispatch"]["inputs"]["dry_run"]["default"] == "true"
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["concurrency"] == {"group": "legacy-iow-volume", "cancel-in-progress": "false"}
     job = workflow["jobs"]["upload"]
     assert "github.ref == 'refs/heads/main'" in job["if"]
-    assert "SCHEDULE_BACKUP_ENABLED" in job["if"]
+    assert "github.event_name == 'workflow_dispatch'" in job["if"]
     steps = job["steps"]
     names = [step.get("name", "") for step in steps]
     assert names.index("Resolve upload mode") < names.index("Restore upload progress")

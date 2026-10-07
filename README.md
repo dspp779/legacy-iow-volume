@@ -27,6 +27,6 @@
 
 Actions 手動執行預設 `dry_run=true`，只登入並讀資料，不上傳、不修改 state，也不提供 IoW OAuth secrets。Production 需 `dry_run=false`、`confirm_production=true`、repo variable `LEGACY_IOW_PRODUCTION_ENABLED=true`，且只能在這個 repo 的 `main` 執行。
 
-原有 `*/5 * * * *` GitHub schedule 保留為備援，預設關閉；另設 `LEGACY_IOW_SCHEDULE_BACKUP_ENABLED=true` 才會執行，也受 production 開關與 state 檢查保護。兩條路徑共用固定 concurrency group，不取消進行中的上傳。
+上傳 workflow 只保留 `workflow_dispatch`，已移除 GitHub schedule，避免與公開 repo 60 天無活動自動停用 scheduled workflow 的規則混用。[GitHub 停用規則](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/disable-and-enable-workflows) Cron-job.org 和 Actions 手動執行共用固定 concurrency group，不取消進行中的上傳。原有 `LEGACY_IOW_SCHEDULE_BACKUP_ENABLED` 已不再使用。
 
 成功上傳後才更新去重 state；同一筆時數和更新時間通常會略過。進度沿用 Actions cache，缺失或空白時 production 預設停止。Cache 不是持久交易紀錄，仍有上傳成功但 state 保存失敗／cache 回退時重送的風險，詳見操作手冊。

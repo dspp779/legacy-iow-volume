@@ -2,7 +2,7 @@
 
 主路徑是 `cron-job.org → GitHub workflow_dispatch → 舊平台讀值／IoW 上傳`。在 cron-job.org 的網頁設定一個 HTTP POST 即可，舊平台與 IoW secrets 繼續留在 GitHub Actions。
 
-**先合併本 PR 到 `main` 再使用下面的設定。** `confirm_production`、`allow_empty_state` 和 `tick_id` 是 PR 新增的 workflow inputs；舊版 workflow 不接受這些欄位。這份文件只提供設定，本次沒有建立／啟用線上 cron job 或執行上傳。
+上傳 workflow 只接受 `workflow_dispatch`，不含 GitHub schedule，避免公開 repo 60 天無活動時 scheduled workflow 被自動停用。[GitHub 停用規則](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/disable-and-enable-workflows) 移除 schedule 不影響以下 URL、token 或 request body；已啟用的 cron-job.org job 可以沿用。
 
 ## GitHub token
 
@@ -54,10 +54,10 @@ Request body 初始使用 dry-run：
 
 ## 正式啟用
 
-1. 合併 PR 後，可用上述 dry-run body 確認 cron-job.org 能建立 GitHub run，並在 Actions 確認結果。Dry-run 會登入舊平台讀值，但不呼叫 IoW、不推進去重 state；本次沒有代為測試線上呼叫。
+1. 可用上述 dry-run body 確認 cron-job.org 能建立 GitHub run，並在 Actions 確認結果。Dry-run 會登入舊平台讀值，但不呼叫 IoW、不推進去重 state。
 2. GitHub repo 的 Settings → Secrets and variables → Actions → Variables，設定 `LEGACY_IOW_PRODUCTION_ENABLED=true`。查看既有 main state cache 仍在，沿用它。
 3. 把 cron-job.org request body 的 `dry_run` 改為 `false`、`confirm_production` 改為 `true`，其他欄位保持原值，再啟用每五分鐘排程。**定期 job 的 `allow_empty_state` 永遠保持 `false`。**
-4. `LEGACY_IOW_SCHEDULE_BACKUP_ENABLED` 保持未設定或 `false` 即可。若希望保留 GitHub schedule 作備援，可另設為 `true`；兩者會共用 concurrency 與 state。
+4. `LEGACY_IOW_SCHEDULE_BACKUP_ENABLED` 已不再使用；若先前有設定，可保留或刪除，不影響派發。不要在這份上傳 workflow 加回 `schedule`。
 
 直接 POST 不經過 repo 的 Python dispatch helper，所以也不需要 helper 的主機 production 環境變數。真正的上傳授權仍由 workflow 的 main 限制、`confirm_production`、repo production 開關與 state guard 判斷。
 
@@ -66,7 +66,7 @@ Request body 初始使用 dry-run：
 - cron-job.org 的成功只表示 GitHub 接受派發，HTTP 200 或 204 均可；實際 script 成敗看 [GitHub Actions](https://github.com/dspp779/legacy-iow-volume/actions)。保留 GitHub Actions 的失敗通知即可作為起點；repo 的 `--check-health` 程式是額外可選監控，並非啟動此 cron job 的前提。
 - Token 到期通常會收到 401/403；workflow/ref/input 不符可能收到 404/422。修正後先查 Actions，避免把可能已接受的 timeout 當成必須立刻連發。
 - 服務可能在連續失敗超過 25 次時自動停用 job；失敗／停用通知可幫助發現這種情況。[FAQ](https://cron-job.org/en/faq/)
-- 停用時先關閉 cron-job.org job，再設 repo `LEGACY_IOW_PRODUCTION_ENABLED=false`；如果有 schedule 備援，一併設 `LEGACY_IOW_SCHEDULE_BACKUP_ENABLED=false`。已通過 guard 的 run 仍可能正在完成上傳／保存 state。
+- 停用時先關閉 cron-job.org job，再設 repo `LEGACY_IOW_PRODUCTION_ENABLED=false`。已通過 guard 的 run 仍可能正在完成上傳／保存 state。
 
 服務 FAQ 目前表示不驗證目標 HTTPS 憑證；本方案沿用使用者選擇直接由 cron-job.org 呼叫，token 僅限這個 repo 的 Actions 權限。[來源](https://cron-job.org/en/faq/)
 

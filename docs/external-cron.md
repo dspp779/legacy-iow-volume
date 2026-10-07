@@ -16,6 +16,8 @@
 
 本方案把需求定為：外部排程器每 5 分鐘嘗試派發一次。cron-job.org 的失敗／停用通知，加上查看 GitHub Actions 結果，是本案的日常操作起點。另提供可選 health check，以 15 分鐘內至少一筆近期建立且成功完成的 production run 作為初始告警門檻。外部派發消除了對 GitHub `schedule` 準時性的依賴，仍依賴 GitHub API、Actions queue、runner、舊平台與 IoW。若要求每筆上傳必須在 5 分鐘內完成，應改用自管短任務直接執行 uploader，並配置持久 state；Actions dispatch 無法提供這種期限保證。
 
+上傳 workflow 現在只保留 `workflow_dispatch`，已移除原先的 GitHub schedule 備援。GitHub 文件規定公開 repo 60 天無活動會自動停用 scheduled workflows；本方案讓外部派發與這項 schedule 規則分離，無需依賴 dispatch 是否算作 repository activity。[GitHub 停用規則](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/disable-and-enable-workflows) 原有 `LEGACY_IOW_SCHEDULE_BACKUP_ENABLED` 已不再使用。未來若需要 GitHub schedule 備援，必須放在獨立 workflow，另外評估停用、共享 concurrency/state 與派發權限；本 repo 目前沒有部署這項備援。
+
 ## 最小架構
 
 ```text
@@ -26,7 +28,6 @@ cron-job.org（每 5 分鐘）
             └─ mode guard → restore/validate state → 舊平台讀值 → IoW
                  └─ 成功才更新 state → save cache → 確認新 cache key 存在
 
-GitHub schedule（可選備援）───────────────┘ 共用相同工作與 state
 日常查看 → cron-job.org 呼叫紀錄 + GitHub Actions 執行結果
 ```
 
@@ -53,11 +54,11 @@ cron-job.org 只持有限定此 repo 的 GitHub dispatch token，不持有 `LEGA
 | `dry_run=false`，未設 `confirm_production=true` | 失敗，讀資料之前停止。 |
 | Repo variable `LEGACY_IOW_PRODUCTION_ENABLED` 不是字串 `true` | Production 失敗；dry-run 仍可用。 |
 | 非本 repo、非 `refs/heads/main` | Job 略過；guard 也會拒絕。分支/tag/fork 不作 production 驗證。 |
-| Schedule 備援開關未設 `true` | Job 略過，即使 GitHub 建立 schedule run。 |
+| 非 `workflow_dispatch` 事件 | Guard 拒絕；workflow 沒有其他上傳 trigger。 |
 | Production cache state 缺失或空物件 | 停止，要求恢復進度或人工確認一次性的 recovery。 |
 | State JSON 或既有紀錄格式毀損 | 停止；`allow_empty_state` 不能繞過毀損。 |
 
-IoW secrets 只在 mode guard 和 state guard 通過後的 production 上傳 step 提供。Repo production variable 同時控制 dispatch 和 schedule；`LEGACY_IOW_SCHEDULE_BACKUP_ENABLED=true` 只開 schedule 備援，不會繞過 production guard。備援預設關閉；啟用後並行 tick 仍共用固定鎖。
+IoW secrets 只在 mode guard 和 state guard 通過後的 production 上傳 step 提供。Repo production variable 控制 dispatch 的正式上傳；外部 cron 與 Actions 手動派發共用固定鎖。
 
 這些是 workflow 的防誤操作保護。直接在其他主機執行 `legacy_iow_volume.py` 仍使用原本 CLI 規則，沒有自動套用 repo 開關或 Actions concurrency；不能同時部署另一個未共用鎖/state 的 production uploader。Main 被修改也能改掉 guard，需保護 main；若未來需要對 cron token 形成更強的權限邊界，可把 IoW secrets 移入限制分支的 production environment，另外評估審核等待是否符合自動排程。
 
@@ -93,10 +94,10 @@ IoW secrets 只在 mode guard 和 state guard 通過後的 production 上傳 ste
    ExecStart=/usr/bin/python3 /opt/legacy-iow-volume/scripts/dispatch_workflow.py --production
    ```
 
-   reload 後下一個 tick 才開始 production。**不要在常駐 service 加 `--allow-empty-state`**。可選擇另設 repo variable `LEGACY_IOW_SCHEDULE_BACKUP_ENABLED=true` 開備援。
+   reload 後下一個 tick 才開始 production。**不要在常駐 service 加 `--allow-empty-state`**。
 7. 在既有監控系統每五分鐘執行唯讀 `python3 scripts/dispatch_workflow.py --check-health --max-age-minutes 15`，非零 exit 告警。還要由主機以外的監控檢查 timer 主機存活及派發 heartbeat；與 cron 同機的 health check 無法發現整台主機離線。
 
-Health check 查這個 workflow 最近 100 筆 main run，排除 dry-run 和關閉備援造成的 skipped schedule。需有 15 分鐘內**建立**且成功完成的 production run，避免延遲數小時的 run 剛完成便被當作健康。超過門檻的 queued/running run 或最新 production failure 也會回報錯誤。若累積異常 dispatch 洪水超過 100 筆，檢查會偏向報無近期成功，需人工查完整歷史。
+Health check 查這個 workflow 最近 100 筆 main run，只計入 production `workflow_dispatch`，排除 dry-run 與所有歷史 schedule run。需有 15 分鐘內**建立**且成功完成的 production run，避免延遲數小時的 run 剛完成便被當作健康。超過門檻的 queued/running run 或最新 production failure 也會回報錯誤。若累積異常 dispatch 洪水超過 100 筆，檢查會偏向報無近期成功，需人工查完整歷史。
 
 停用時先停止外部 timer，再把 repo `LEGACY_IOW_PRODUCTION_ENABLED=false`；保留 state。Repo variable 的更動不能撤回已通過 guard 的 run，停用當下仍須查看正在執行的工作。除非需要立即中止，讓它完成 state 保存，比在上傳中強制取消更容易保持一致。
 
@@ -106,11 +107,11 @@ systemd 的 `Persistent=true` 可在主機恢復後補觸發一次，並不補�
 
 ## Concurrency 與 state：足夠的範圍
 
-固定 `group: legacy-iow-volume`、`cancel-in-progress: false` 保證同一 repo 的這個 workflow 至多一班執行中。外部 cron、手動 dispatch、schedule 共用，不按 event/ref 分組。預設最多一班 pending，新 pending 會取代舊 pending；這適用於本 uploader 每班讀取當下最新累計時數，不需執行每個錯過的 tick。它無法補齊舊平台沒有保存的歷史觀測，也不保證順序或五分鐘完成。不要改 `cancel-in-progress: true`，否則可能中止在「IoW 已收下、state 未存」之間。[官方 concurrency 行為](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+固定 `group: legacy-iow-volume`、`cancel-in-progress: false` 保證同一 repo 的這個 workflow 至多一班執行中。外部 cron 與手動 dispatch 共用，不按 event/ref 分組。預設最多一班 pending，新 pending 會取代舊 pending；這適用於本 uploader 每班讀取當下最新累計時數，不需執行每個錯過的 tick。它無法補齊舊平台沒有保存的歷史觀測，也不保證順序或五分鐘完成。不要改 `cancel-in-progress: true`，否則可能中止在「IoW 已收下、state 未存」之間。[官方 concurrency 行為](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
 
 State 繼續使用 `legacy-iow-volume-` prefix，以相容既有 main cache。每台泵以 `pump_no` 比較 `seconds` 和 `received_at`；兩者相同即略過，任一改變則候選上傳，成功回應後才原子更新本地 state。只有 production 且 state 內容改變才建立新 cache，dry-run 和 no-op 不建立新的進度副本。保存後以同一精確 key 做 lookup，避免 save warning 被誤當成功；這只確認 cache entry 存在，並非驗證 IoW 接收的資料。[Cache action 行為](https://github.com/actions/cache)
 
-對一般重複 tick、backup 重疊、成功後下一班恢復同一 state 的情況足夠；對以下情況不足以保證 exactly-once：
+對一般重複 tick、外部與手動派發重疊、成功後下一班恢復同一 state 的情況足夠；對以下情況不足以保證 exactly-once：
 
 - Cache 可被刪除/淘汰，prefix restore 可能退回更舊版本。完全缺失現在會停止，但「舊 cache 還在」無法只靠現有 state 判斷新副本曾遺失。[GitHub cache 存取與淘汰規則](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)
 - IoW 收到 POST 但 client 逾時、runner 故障、寫 state 失敗或 cache save 失敗，下次可能重送。即使加持久 store，跨 IoW POST 與 state commit 仍有交易空窗；要做到 exactly-once 需 IoW 提供經驗證的 idempotency/upsert 規則。此 repo 沒有證據可宣稱相同 `Id + TimeStamp` 一定安全去重。
@@ -119,7 +120,7 @@ State 繼續使用 `legacy-iow-volume-` prefix，以相容既有 main cache。�
 
 因此本次選擇保留 cache 並補 guard/告警，作為最小改動。若重送不能接受或需要停機後保留完整 ledger，下一階段使用私有 object store/DB、版本或 CAS、共用鎖與可查驗的紀錄；IoW 去重契約仍需另外確認。不要把帳密、泵設定或未審查的 state 寫進此公開 repo 的 branch。
 
-State 丟失時：先停止 primary timer 和 schedule 備援，確認無 active run；從可信保存副本恢復，或先核對 IoW 已接受的觀測。只有確認後才單次 `allow_empty_state=true` / helper `--production --allow-empty-state`。這會允許重送候選讀值，不能拿來驗證；本次沒有執行。毀損 JSON 必須先修復，恢復操作不會自動忽略它。後續定時觸發一律回到 `allow_empty_state=false`。
+State 丟失時：先停止外部排程，確認無 active run；從可信保存副本恢復，或先核對 IoW 已接受的觀測。只有確認後才單次 `allow_empty_state=true` / helper `--production --allow-empty-state`。這會允許重送候選讀值，不能拿來驗證；本次沒有執行。毀損 JSON 必須先修復，恢復操作不會自動忽略它。後續定時觸發一律回到 `allow_empty_state=false`。
 
 ## 替代方案比較
 
@@ -127,7 +128,7 @@ State 丟失時：先停止 primary timer 和 schedule 備援，確認無 active
 |---|---|---|
 | **cron-job.org → workflow_dispatch（本方案）** | 服務延遲／停用、token 到期、API 故障、Actions 排隊、cache 遺失；HTTP 接受不等於執行成功 | 網頁設定一次 POST，token 輪替、失敗／停用通知與 Actions 結果查看；沿用 Actions secrets、log、短 runner。 |
 | 自管 cron → workflow_dispatch | 主機離線、token 到期、API／Actions 故障 | 已有主機時可用 Python helper/systemd timer；需另維護主機與告警。 |
-| GitHub schedule 作主路徑 | 延遲、丟班、停用；本次已觀察數小時間隔 | 成本低，沒有可接受的準時性證據；只作可選備援，GitHub 故障時也無法接手。 |
+| GitHub schedule 作主路徑 | 延遲、丟班、60 天無活動停用；本次已觀察數小時間隔 | 成本低，沒有可接受的準時性證據；本方案已移除，若未來作備援需獨立 workflow，GitHub 故障時也無法接手。 |
 | 長時間 GitHub-hosted job 內 `sleep 300` 迴圈 | job 被終止、runner 故障、部署需中斷；必須另設可靠重啟來源；睡眠耗 runner 時間 | 受 GitHub-hosted 每 job 6 小時上限限制，需要接棒與 state checkpoint，回到派發問題；維護較高。[Actions limits](https://docs.github.com/en/actions/reference/limits) |
 | 常駐自管主機直接跑短 uploader + timer，或常駐 daemon | 主機/網路故障、OAuth、state 損毀；多 instance 需共用鎖；loop crash/drift 需 supervisor | 能避開 Actions queue；主機須保管舊平台與 IoW secrets、持久 state、備份、更新、log/告警。若五分鐘是完成期限，優先短任務 timer，而不是無 supervisor 的無限 loop。 |
 | 外部 cron → self-hosted Actions runner | 仍依賴 GitHub API/queue/control plane，再加自管 runner 離線與更新 | 可減少 runner 配置不確定性，但增加主機與 runner 安全維運，未消除 GitHub 派發依賴。 |
