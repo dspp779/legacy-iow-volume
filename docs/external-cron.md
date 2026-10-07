@@ -1,5 +1,7 @@
 # 約每 5 分鐘的外部派發方案
 
+本案選用 **cron-job.org 直接 POST** 作為主要觸發方式，設定步驟見 [cron-job.org 設定指南](cron-job-org.md)。下面保留共用 workflow 保護、故障分析與替代方式；Python helper／systemd 部署適用於另有自管主機的情況。
+
 ## 新證據與需求界線
 
 截至 **2026-10-07 09:54 Asia/Taipei**，GitHub REST API 的 `event=schedule` 紀錄如下；三筆都是 `success`，`head_sha` 同為 `4e1aba6251b259a6a880071032bb84a6c6ce78e0`。
@@ -12,26 +14,25 @@
 
 #10 到上述觀察時間已有 1:55:57 沒有新 run。Workflow API 同時顯示 `state=active`。因此「完全沒有 schedule event」已過時；可確認的是設定的每 5 分鐘沒有成為實際派發頻率。這些紀錄無法單獨證明 GitHub 內部延遲原因。[GitHub 官方事件文件](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule) 說明 schedule 可能延遲，負載高時可能丟棄排程工作。
 
-本方案把需求定為：健康的外部排程器每 5 分鐘嘗試派發一次，監控 15 分鐘內至少一筆近期建立且成功完成的 production run。這個 15 分鐘門檻是初始告警設定，可依實測收緊。外部派發消除了對 GitHub `schedule` 準時性的依賴，仍依賴 GitHub API、Actions queue、runner、舊平台與 IoW。若要求每筆上傳必須在 5 分鐘內完成，應改用自管短任務直接執行 uploader，並配置持久 state；Actions dispatch 無法提供這種期限保證。
+本方案把需求定為：外部排程器每 5 分鐘嘗試派發一次。cron-job.org 的失敗／停用通知，加上查看 GitHub Actions 結果，是本案的日常操作起點。另提供可選 health check，以 15 分鐘內至少一筆近期建立且成功完成的 production run 作為初始告警門檻。外部派發消除了對 GitHub `schedule` 準時性的依賴，仍依賴 GitHub API、Actions queue、runner、舊平台與 IoW。若要求每筆上傳必須在 5 分鐘內完成，應改用自管短任務直接執行 uploader，並配置持久 state；Actions dispatch 無法提供這種期限保證。
 
 ## 最小架構
 
 ```text
-常駐 Linux 主機 / 已有可靠外部 cron（每 5 分鐘）
-  └─ scripts/dispatch_workflow.py
-       └─ POST /repos/dspp779/legacy-iow-volume/actions/workflows/legacy-iow-volume.yml/dispatches
-            ref=main, dry_run=false, confirm_production=true, allow_empty_state=false
-            └─ 固定 concurrency group: legacy-iow-volume
-                 └─ mode guard → restore/validate state → 舊平台讀值 → IoW
-                      └─ 成功才更新 state → save cache → 確認新 cache key 存在
+cron-job.org（每 5 分鐘）
+  └─ POST /repos/dspp779/legacy-iow-volume/actions/workflows/legacy-iow-volume.yml/dispatches
+       ref=main, dry_run=false, confirm_production=true, allow_empty_state=false
+       └─ 固定 concurrency group: legacy-iow-volume
+            └─ mode guard → restore/validate state → 舊平台讀值 → IoW
+                 └─ 成功才更新 state → save cache → 確認新 cache key 存在
 
 GitHub schedule（可選備援）───────────────┘ 共用相同工作與 state
-獨立監控 → cron 主機存活 + GET Actions runs + 舊平台/IoW 資料新鮮度
+日常查看 → cron-job.org 呼叫紀錄 + GitHub Actions 執行結果
 ```
 
-只增加短 HTTP 任務；cron 主機不持有 `LEGACY_PASSWORD` 或 IoW OAuth secrets，也不跑 uploader。既有 Actions secrets、web 讀值與上傳程式沿用。若已有不休眠的維運主機，使用 repo 的 systemd 範例；也可由已具監控、逾時與秘密管理的外部 cron 執行相同程式。不要把主要 timer 放在會休眠的筆電，也不要改放到另一個 GitHub schedule。
+cron-job.org 只持有限定此 repo 的 GitHub dispatch token，不持有 `LEGACY_PASSWORD` 或 IoW OAuth secrets，也不跑 uploader。既有 Actions secrets、web 讀值與上傳程式沿用。若日後改用不休眠的自管維運主機，可使用 repo 的 Python helper／systemd 範例。
 
-每個 tick 一次 POST，20 秒網路逾時，沒有自動 POST 重試。HTTP 200（新 API 回傳 run id）或 204（舊回應形式）只代表接受派發，之後仍要查 completion。`tick_id` 是 UTC 五分鐘 bucket 的識別字，只便於對照 log/run title，GitHub 不會以它去重。網路逾時可能已建立 run；不要當作「一定沒送出」立即連發，先看 Actions，或讓下一個 tick 再嘗試。401/403/404/422 要檢查 token、repo/ref、workflow/input；429/5xx 要監控 rate limit 或服務狀態。[Dispatch API 文件](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)
+每個 tick 一次 POST，建議 20 秒網路逾時。HTTP 200（新 API 回傳 run id）或 204（舊回應形式）只代表接受派發，之後仍要查 completion。`tick_id` 只便於對照 log/run title，GitHub 不會以它去重；cron-job.org 使用每次替換的時間變數，自管 helper 使用 UTC 五分鐘 bucket。Helper 沒有自動 POST 重試。網路逾時可能已建立 run；不要當作「一定沒送出」立即連發，先看 Actions，或讓下一個 tick 再嘗試。401/403/404/422 要檢查 token、repo/ref、workflow/input；429/5xx 要監控 rate limit 或服務狀態。[Dispatch API 文件](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)
 
 ## Token 最小權限
 
@@ -60,7 +61,9 @@ IoW secrets 只在 mode guard 和 state guard 通過後的 production 上傳 ste
 
 這些是 workflow 的防誤操作保護。直接在其他主機執行 `legacy_iow_volume.py` 仍使用原本 CLI 規則，沒有自動套用 repo 開關或 Actions concurrency；不能同時部署另一個未共用鎖/state 的 production uploader。Main 被修改也能改掉 guard，需保護 main；若未來需要對 cron token 形成更強的權限邊界，可把 IoW secrets 移入限制分支的 production environment，另外評估審核等待是否符合自動排程。
 
-## 部署與啟用順序
+## 自管主機替代方案的部署與啟用順序
+
+使用 cron-job.org 時按 [設定指南](cron-job-org.md) 操作即可，以下不是本案的啟用前提。
 
 本次只有 repo 變更與離線驗證，沒有安裝 timer、建立 PAT/App、設定 repo variables、dispatch 或 production 上傳。
 
@@ -122,7 +125,8 @@ State 丟失時：先停止 primary timer 和 schedule 備援，確認無 active
 
 | 方案 | 主要故障模式 | 維護成本與適用性 |
 |---|---|---|
-| **外部 cron → workflow_dispatch（本方案）** | cron 主機/secret 到期/API 故障、Actions 排隊、cache 遺失；HTTP 接受不等於執行成功 | 小型標準函式庫程式、timer、token 輪替和獨立告警；延用 Actions secrets、log、短 runner。最小改動，滿足約五分鐘派發。 |
+| **cron-job.org → workflow_dispatch（本方案）** | 服務延遲／停用、token 到期、API 故障、Actions 排隊、cache 遺失；HTTP 接受不等於執行成功 | 網頁設定一次 POST，token 輪替、失敗／停用通知與 Actions 結果查看；沿用 Actions secrets、log、短 runner。 |
+| 自管 cron → workflow_dispatch | 主機離線、token 到期、API／Actions 故障 | 已有主機時可用 Python helper/systemd timer；需另維護主機與告警。 |
 | GitHub schedule 作主路徑 | 延遲、丟班、停用；本次已觀察數小時間隔 | 成本低，沒有可接受的準時性證據；只作可選備援，GitHub 故障時也無法接手。 |
 | 長時間 GitHub-hosted job 內 `sleep 300` 迴圈 | job 被終止、runner 故障、部署需中斷；必須另設可靠重啟來源；睡眠耗 runner 時間 | 受 GitHub-hosted 每 job 6 小時上限限制，需要接棒與 state checkpoint，回到派發問題；維護較高。[Actions limits](https://docs.github.com/en/actions/reference/limits) |
 | 常駐自管主機直接跑短 uploader + timer，或常駐 daemon | 主機/網路故障、OAuth、state 損毀；多 instance 需共用鎖；loop crash/drift 需 supervisor | 能避開 Actions queue；主機須保管舊平台與 IoW secrets、持久 state、備份、更新、log/告警。若五分鐘是完成期限，優先短任務 timer，而不是無 supervisor 的無限 loop。 |

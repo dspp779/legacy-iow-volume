@@ -23,7 +23,7 @@
 
 ## 執行
 
-主路徑改為可靠外部 cron 每 5 分鐘呼叫 GitHub API 的 `workflow_dispatch`。設定、最小權限 token、部署範例、監控與故障比較見 [外部 cron 操作手冊](docs/external-cron.md)。Actions 排隊仍可能延遲，因此這是約每 5 分鐘派發的方案。
+主路徑使用 **cron-job.org 每 5 分鐘直接 POST GitHub `workflow_dispatch`**。可照 [cron-job.org 設定指南](docs/cron-job-org.md) 填 URL、headers 和 request body；上傳程式與既有 secrets 繼續由 Actions 執行。Actions 排隊仍可能延遲，因此這是約每 5 分鐘派發的方案。其他外部 cron、concurrency/state 限制與故障比較見 [外部派發設計](docs/external-cron.md)。
 
 Actions 手動執行預設 `dry_run=true`，只登入並讀資料，不上傳、不修改 state，也不提供 IoW OAuth secrets。Production 需 `dry_run=false`、`confirm_production=true`、repo variable `LEGACY_IOW_PRODUCTION_ENABLED=true`，且只能在這個 repo 的 `main` 執行。
 
